@@ -1,0 +1,72 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.7
+      - name: Download Bengali fonts (open-source, SIL OFL)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p app/src/main/assets/fonts
+          python3 - <<'PY'
+          import json, os, re, urllib.request
+          token = os.environ.get("GH_TOKEN", "")
+          def get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token, "User-Agent": "ci"})
+              return urllib.request.urlopen(req, timeout=120).read()
+          families = ["hindsiliguri", "notosansbengali", "notoserifbengali", "tirobangla",
+                      "anekbangla", "balooda2", "atma", "mina", "galada"]
+          out = "app/src/main/assets/fonts"
+          for fam in families:
+              try:
+                  items = json.loads(get("https://api.github.com/repos/google/fonts/contents/ofl/" + fam))
+                  count = 0
+                  for it in items:
+                      name = it["name"]
+                      if not name.lower().endswith(".ttf"):
+                          continue
+                      safe = re.sub(r"[^A-Za-z0-9._-]", "", name)
+                      with open(os.path.join(out, safe), "wb") as f:
+                          f.write(get(it["download_url"]))
+                      count += 1
+                  print(fam, count, "files")
+              except Exception as e:
+                  print("MISSING", fam, e)
+          PY
+          ls -la app/src/main/assets/fonts
+      - name: Build
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -o pipefail
+          gradle assembleDebug --console=plain 2>&1 | tee build.log
+      - name: Show build errors in summary
+        if: failure()
+        run: |
+          {
+            echo "## Build errors"
+            echo "~~~"
+            grep -E "^e: " build.log | sed 's#file:///home/runner/work/[^/]*/[^/]*/##' | head -40 || true
+            echo "~~~"
+            echo "## Last lines of the log"
+            echo "~~~"
+            tail -30 build.log
+            echo "~~~"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AI-News-Studio-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
